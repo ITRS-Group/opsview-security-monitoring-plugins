@@ -1,1 +1,1 @@
-from .check_sentinel import SentinelCheck, SentinelAPI
+from .check_sentinel import SentinelCheck, SentinelAPI, SentinelCheckExit

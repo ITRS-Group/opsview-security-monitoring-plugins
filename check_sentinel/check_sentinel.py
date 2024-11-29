@@ -28,6 +28,10 @@ from collections import namedtuple
 
 from azure.identity import DefaultAzureCredential
 from azure.mgmt.securityinsight import SecurityInsights
+from plugnpy import cachemanager
+from azure.mgmt.resource import SubscriptionClient
+from azure.mgmt.resource.resources import ResourceManagementClient
+from azure.mgmt.loganalytics import LogAnalyticsManagementClient
 
 from plugnpy.exception import ParamError, ParamErrorWithHelp, ResultError
 from plugnpy.cachemanager import CacheManagerUtils
@@ -83,6 +87,66 @@ class SentinelAPI:
             subscription_id=self.subscription_id,
         )
 
+    def list_lighthouse_sentinel_workspaces(self):
+        """List all Sentinel workspaces accessible via Azure Lighthouse."""
+        subscriptions_client = SubscriptionClient(self.credentials)
+        subscriptions = CacheManagerUtils.get_via_cachemanager(
+            no_cachemanager=False,  # TODO: Add argument to disable cache manager
+            key="subscriptions",
+            ttl=3600,
+            func=subscriptions_client.subscriptions.list,
+        )
+
+        sentinel_workspaces = []
+
+        for subscription in subscriptions:
+            subscription_id = subscription.subscription_id
+            resource_client = ResourceManagementClient(self.credentials, subscription_id)
+            log_analytics_client = LogAnalyticsManagementClient(self.credentials, subscription_id)
+
+            resource_groups = CacheManagerUtils.get_via_cachemanager(
+                no_cachemanager=False,  # TODO: Add argument to disable cache manager
+                key=f"resource_groups_{subscription_id}",
+                ttl=3600,
+                func=resource_client.resource_groups.list,
+            )
+
+            for rg in resource_groups:
+                resource_group_name = rg.name
+
+                workspaces = CacheManagerUtils.get_via_cachemanager(
+                    no_cachemanager=False,  # TODO: Add argument to disable cache manager
+                    key=f"workspaces_{subscription_id}_{resource_group_name}",
+                    ttl=300,
+                    func=log_analytics_client.workspaces.list_by_resource_group,
+                    resource_group_name=resource_group_name,
+                )
+
+                for workspace in workspaces:
+                    workspace_name = workspace.name
+
+                    # Check if Sentinel is enabled on the workspace
+                    sentinel_client = SecurityInsights(
+                        credential=self.credentials,
+                        subscription_id=subscription_id,
+                    )
+
+                    try:
+                        sentinel_client.entities.list(resource_group_name, workspace_name)
+                        # If no exception, Sentinel is enabled
+                        sentinel_workspaces.append(
+                            {
+                                "subscription_id": subscription_id,
+                                "resource_group_name": resource_group_name,
+                                "workspace_name": workspace_name,
+                            }
+                        )
+                    except Exception:
+                        # Sentinel is not enabled on this workspace
+                        pass
+
+        return sentinel_workspaces
+
     def get_incidents(self):
         """Retrieve incidents from Microsoft Sentinel."""
         incidents = self.client.incidents.list(
@@ -114,6 +178,12 @@ class SentinelCheck(PluginClassBase):
         self._unit = unit
         self._interval = interval
         self._api = SentinelAPI(args)
+
+        self._expected_workspaces = set()
+        if hasattr(args, "expected_workspaces") and args.expected_workspaces:
+            self._expected_workspaces = set(
+                [ws.strip() for ws in args.expected_workspaces.split(",")]
+            )
 
         try:
             if metric_type == METRIC_TYPE_CUSTOM:
@@ -221,7 +291,54 @@ class SentinelCheck(PluginClassBase):
         ]
         return metrics
 
-    # Additional check methods can be added here.
+    def check_lighthouse_sentinels(self):
+        """Check that Sentinel workspaces are accessible via Azure Lighthouse."""
+        sentinel_workspaces = self.call_api(self._api.list_lighthouse_sentinel_workspaces)
+        total_workspaces = len(sentinel_workspaces)
+
+        label = "Accessible Sentinel Workspaces"
+        metric_name = self.convert_label_name(label)
+        warning, critical = self._get_thresholds(0, metric_name)
+
+        metrics = [
+            Metric(
+                metric_name,
+                total_workspaces,
+                self._unit,
+                warning,
+                critical,
+                display_name=label,
+                summary_precision=0,
+                perf_data_precision=0,
+            )
+        ]
+
+        # Optionally, check if total_workspaces is less than expected
+        expected_workspaces = self._expected_workspaces
+        if expected_workspaces:
+            expected_count = len(expected_workspaces)
+            if total_workspaces < expected_count:
+                sentinel_workspace_names = set(
+                    [w.get("workspace_name") for w in sentinel_workspaces]
+                )
+                missing = sorted(expected_workspaces - sentinel_workspace_names)
+                missing_str = ",".join(missing)
+                raise SentinelCheckExit(
+                    Metric.STATUS_CRITICAL,
+                    f"Expected {expected_count} workspaces, but found {total_workspaces}. Missing: {missing_str}",
+                )
+            elif total_workspaces > expected_count:
+                sentinel_workspace_names = set(
+                    [w.get("workspace_name") for w in sentinel_workspaces]
+                )
+                extra = sorted(sentinel_workspace_names - expected_workspaces)
+                extra_str = ",".join(extra)
+                raise SentinelCheckExit(
+                    Metric.STATUS_WARNING,
+                    f"Expected {expected_count} workspaces, but found {total_workspaces}. Extra: {extra_str}",
+                )
+
+        return metrics
 
 
 # Define how each mode works, pointing to the correct Objects
@@ -229,13 +346,13 @@ MODE_MAPPING = {
     "Sentinel.Incidents": ModeUsage(
         "Custom",
         "check_open_incidents; 1",
-        [],  # Optional arguments
+        [],  # No optional arguments
         [
             "AZURE_SUBSCRIPTION_ID",
             "AZURE_RESOURCE_GROUP",
             "AZURE_WORKSPACE_NAME",
         ],  # Required arguments
-        "",  # Unit
+        "",
         300,
         SentinelCheck,
         {},
@@ -244,19 +361,29 @@ MODE_MAPPING = {
     "Sentinel.Incidents": ModeUsage(
         "Custom",
         "check_new_incidents; 1",
-        [],  # Optional arguments
+        [],  # No optional arguments
         [
             "AZURE_SUBSCRIPTION_ID",
             "AZURE_RESOURCE_GROUP",
             "AZURE_WORKSPACE_NAME",
         ],  # Required arguments
-        "",  # Unit
+        "",
         300,
         SentinelCheck,
         {},
         {},
     ),
-    # Additional modes can be added here.
+    "Sentinel.LighthouseCheck": ModeUsage(
+        "Custom",
+        "check_lighthouse_sentinels; 1",
+        ["EXPECTED_WORKSPACES"],  # Optional argument
+        [],  # No required arguments
+        "",
+        300,
+        SentinelCheck,
+        {},
+        {},
+    ),
 }
 
 # Define additional arguments that ArgParse can take in if needed by a mode
@@ -286,6 +413,17 @@ RESOURCE_VARIABLES = [
                 "--workspace-name",
                 "The Azure Sentinel workspace name",
                 "AZURE_WORKSPACE_NAME",
+            ),
+        ],
+    ),
+    ResourceVariable(
+        "EXPECTED_WORKSPACES",
+        "",
+        arguments=[
+            ResourceArgument(
+                "--expected-workspaces",
+                "Optional comma-separated list of expected workspace names",
+                "EXPECTED_WORKSPACES",
             ),
         ],
     ),

@@ -1,3 +1,5 @@
 git+https://github.com/opsview/plugnpy.git
 azure-identity
 azure-mgmt-securityinsight
+azure-mgmt-resource
+azure-mgmt-loganalytics
