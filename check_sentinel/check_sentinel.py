@@ -112,6 +112,7 @@ class SentinelCheck(PluginClassBase):
         self._critical = critical
         self._metric_type = metric_type
         self._unit = unit
+        self._interval = interval
         self._api = SentinelAPI(args)
 
         try:
