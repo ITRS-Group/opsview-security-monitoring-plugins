@@ -1,0 +1,3 @@
+git+https://github.com/opsview/plugnpy.git
+azure-identity
+azure-mgmt-securityinsight
