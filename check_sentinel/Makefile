@@ -4,7 +4,7 @@ SHELL := /bin/bash
 .PHONY: init test coverage clean
 
 init:
-	python3 -m venv venv
+	python3.9 -m venv venv
 	. venv/bin/activate
 	pip install --upgrade pip
 	pip install -r requirements-dev.txt
