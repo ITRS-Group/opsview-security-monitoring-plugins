@@ -341,7 +341,8 @@ class SentinelCheck(PluginClassBase):
         return metrics
 
 
-# Define how each mode works, pointing to the correct Objects
+# Define how each mode works, pointing to the correct Objects.
+# Names need to be in the format "Group.Mode".
 MODE_MAPPING = {
     "Sentinel.Incidents": ModeUsage(
         "Custom",
