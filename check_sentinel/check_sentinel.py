@@ -325,21 +325,25 @@ class SentinelCheck(PluginClassBase):
                 sentinel_workspace_names = set(
                     [w.get("workspace_name") for w in sentinel_workspaces]
                 )
-                missing = sorted(expected_workspaces - sentinel_workspace_names)
-                missing_str = ",".join(missing)
+                missing = ",".join(
+                    [f"'{m}'" for m in sorted(expected_workspaces - sentinel_workspace_names)]
+                )
                 raise SentinelCheckExit(
                     Metric.STATUS_CRITICAL,
-                    f"Expected {expected_count} workspaces, but found {total_workspaces}. Missing: {missing_str}",
+                    f"Expected {expected_count} workspaces, but found {total_workspaces}. "
+                    + f"Missing: [{missing}]",
                 )
             elif total_workspaces > expected_count:
                 sentinel_workspace_names = set(
                     [w.get("workspace_name") for w in sentinel_workspaces]
                 )
-                extra = sorted(sentinel_workspace_names - expected_workspaces)
-                extra_str = ",".join(extra)
+                extra = ",".join(
+                    [f"'{e}'" for e in sorted(sentinel_workspace_names - expected_workspaces)]
+                )
                 raise SentinelCheckExit(
                     Metric.STATUS_WARNING,
-                    f"Expected {expected_count} workspaces, but found {total_workspaces}. Extra: {extra_str}",
+                    f"Expected {expected_count} workspaces, but found {total_workspaces}. "
+                    + f"Extra: [{extra}]",
                 )
 
         return metrics

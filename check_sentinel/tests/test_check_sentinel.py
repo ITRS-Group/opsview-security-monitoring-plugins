@@ -102,20 +102,34 @@ def test_check_incidents(
             "ws1,ws2",
             1,
             Metric.STATUS_CRITICAL,
-            "Expected 2 workspaces, but found 1. Missing: ws2",
+            "Expected 2 workspaces, but found 1. Missing: ['ws2']",
         ),
         # Test case 4: No accessible workspaces, but expected workspaces provided
-        ([], "ws1", 0, Metric.STATUS_CRITICAL, "Expected 1 workspaces, but found 0. Missing: ws1"),
+        (
+            [],
+            "ws1",
+            0,
+            Metric.STATUS_CRITICAL,
+            "Expected 1 workspaces, but found 0. Missing: ['ws1']",
+        ),
         # Test case 5: More accessible workspaces than expected
         (
             ["ws1", "ws2", "ws3"],
             "ws1,ws2",
             3,
             Metric.STATUS_WARNING,
-            "Expected 2 workspaces, but found 3. Extra: ws3",
+            "Expected 2 workspaces, but found 3. Extra: ['ws3']",
         ),
         # Test case 6: No expected workspaces provided
         (["ws1", "ws2"], "", 2, Metric.STATUS_OK, None),
+        # Test case 7: Expected workspaces with different casing and order
+        (
+            ["expected-workspace-1", "expected_workspace_2", "expected workspace 3"],
+            "expected_workspace_2,expected-workspace-1",
+            2,
+            Metric.STATUS_WARNING,
+            "Expected 2 workspaces, but found 3. Extra: ['expected workspace 3']",
+        ),
     ],
 )
 def test_check_lighthouse_sentinels(
