@@ -12,9 +12,12 @@ from collections import namedtuple
 def sentinel_args():
     """Fixture for common SentinelCheck arguments."""
     return argparse.Namespace(
-        subscription_id="test_subscription_id",
-        resource_group="test_resource_group",
-        workspace_name="test_workspace_name",
+        client_id="11111111-1111-1111-1111-111111111111",
+        tenant_id="22222222-2222-2222-2222-222222222222",
+        subscription_id="33333333-3333-3333-3333-333333333333",
+        resource_group="test-resource-group",
+        workspace_name="test-workspace-name",
+        client_secret="test-client-secret",
         warning=None,
         critical=None,
     )

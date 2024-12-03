@@ -26,7 +26,7 @@ import logging
 
 from collections import namedtuple
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import ClientSecretCredential
 from azure.mgmt.securityinsight import SecurityInsights
 from plugnpy import cachemanager
 from azure.mgmt.resource import SubscriptionClient
@@ -78,7 +78,11 @@ class SentinelAPI:
 
     def __init__(self, args):
         self.args = args
-        self.credentials = DefaultAzureCredential()
+        self.credentials = ClientSecretCredential(
+            tenant_id=args.tenant_id,
+            client_id=args.client_id,
+            client_secret=args.client_secret,
+        )
         self.subscription_id = args.subscription_id
         self.resource_group_name = args.resource_group
         self.workspace_name = args.workspace_name
@@ -349,6 +353,9 @@ MODE_MAPPING = {
         "check_open_incidents; 1",
         [],  # No optional arguments
         [
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_TENANT_ID",
             "AZURE_SUBSCRIPTION_ID",
             "AZURE_RESOURCE_GROUP",
             "AZURE_WORKSPACE_NAME",
@@ -364,6 +371,9 @@ MODE_MAPPING = {
         "check_new_incidents; 1",
         [],  # No optional arguments
         [
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_TENANT_ID",
             "AZURE_SUBSCRIPTION_ID",
             "AZURE_RESOURCE_GROUP",
             "AZURE_WORKSPACE_NAME",
@@ -378,7 +388,12 @@ MODE_MAPPING = {
         "Custom",
         "check_lighthouse_sentinels; 1",
         ["EXPECTED_WORKSPACES"],  # Optional argument
-        [],  # No required arguments
+        [
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+        ],  # Required arguments
         "",
         300,
         SentinelCheck,
@@ -393,7 +408,21 @@ RESOURCE_VARIABLES = [
         "AZURE_CREDENTIALS",
         "Azure Credentials",
         arguments=[
-            # Using DefaultAzureCredential, so explicit credentials may not be needed
+            ResourceArgument(
+                "--client-id",
+                "The Azure client ID",
+                "AZURE_CLIENT_ID",
+            ),
+            ResourceArgument(
+                "--client-secret",
+                "The Azure client secret",
+                "AZURE_CLIENT_SECRET",
+            ),
+            ResourceArgument(
+                "--tenant-id",
+                "The Azure tenant ID",
+                "AZURE_TENANT_ID",
+            ),
         ],
     ),
     ResourceVariable(
