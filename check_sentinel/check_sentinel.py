@@ -110,7 +110,7 @@ class SentinelAPI:
             log_analytics_client = LogAnalyticsManagementClient(self.credentials, subscription_id)
 
             resource_groups = CacheManagerUtils.get_via_cachemanager(
-                no_cachemanager=False,  # TODO: Add argument to disable cache manager
+                no_cachemanager=self.no_cache_manager,
                 key=f"resource_groups_{subscription_id}",
                 ttl=3600,
                 func=resource_client.resource_groups.list,
@@ -120,7 +120,7 @@ class SentinelAPI:
                 resource_group_name = rg.name
 
                 workspaces = CacheManagerUtils.get_via_cachemanager(
-                    no_cachemanager=False,  # TODO: Add argument to disable cache manager
+                    no_cachemanager=self.no_cache_manager,
                     key=f"workspaces_{subscription_id}_{resource_group_name}",
                     ttl=300,
                     func=log_analytics_client.workspaces.list_by_resource_group,
@@ -533,7 +533,7 @@ def get_args(modes):
     parser.add_argument("-C", "--check-interval", help="Service check check interval")
     parser.add_argument("-d", "--debug", action="store_true", help="Debug mode")
     parser.add_argument("-h", "--help", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--no-cachemanager", action="store_true", help="Test mode")
+    parser.add_argument("--no-cache-manager", action="store_true", help="Test mode")
 
     # Get Mode out
     args, _ = parser.parse_known_args()
