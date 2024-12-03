@@ -84,18 +84,19 @@ class SentinelAPI:
             client_secret=args.client_secret,
         )
         self.subscription_id = args.subscription_id
-        self.resource_group_name = args.resource_group
-        self.workspace_name = args.workspace_name
+        self.resource_group_name = getattr(args, "resource_group", None)
+        self.workspace_name = getattr(args, "workspace_name", None)
         self.client = SecurityInsights(
             credential=self.credentials,
             subscription_id=self.subscription_id,
         )
+        self.no_cache_manager = getattr(args, "no_cache_manager", False)
 
     def list_lighthouse_sentinel_workspaces(self):
         """List all Sentinel workspaces accessible via Azure Lighthouse."""
         subscriptions_client = SubscriptionClient(self.credentials)
         subscriptions = CacheManagerUtils.get_via_cachemanager(
-            no_cachemanager=False,  # TODO: Add argument to disable cache manager
+            no_cachemanager=self.no_cache_manager,
             key="subscriptions",
             ttl=3600,
             func=subscriptions_client.subscriptions.list,
