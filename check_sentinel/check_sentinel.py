@@ -3,7 +3,7 @@
 """
 Opsview Monitor check_sentinel plugin.
 
-Copyright (C) 2003-2024 ITRS Group Ltd. All rights reserved
+Copyright (C) 2024 ITRS Group Ltd. All rights reserved
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@ import logging
 from collections import namedtuple
 
 from azure.identity import ClientSecretCredential
+from azure.monitor.query import LogsQueryClient, LogsBatchQuery
 from azure.mgmt.securityinsight import SecurityInsights
-from plugnpy import cachemanager
 from azure.mgmt.resource import SubscriptionClient
 from azure.mgmt.resource.resources import ResourceManagementClient
 from azure.mgmt.loganalytics import LogAnalyticsManagementClient
@@ -86,11 +86,69 @@ class SentinelAPI:
         self.subscription_id = args.subscription_id
         self.resource_group_name = getattr(args, "resource_group", None)
         self.workspace_name = getattr(args, "workspace_name", None)
-        self.client = SecurityInsights(
+        self.no_cache_manager = getattr(args, "no_cache_manager", False)
+        self.sentinel_client = SecurityInsights(
             credential=self.credentials,
             subscription_id=self.subscription_id,
         )
-        self.no_cache_manager = getattr(args, "no_cache_manager", False)
+        self.logs_query_client = LogsQueryClient(
+            credential=self.credentials, subscription_id=self.subscription_id
+        )
+        self.log_analytics_client = LogAnalyticsManagementClient(
+            self.credentials, self.subscription_id
+        )
+        self.known_errors = {
+            "Failed to resolve table or column expression named 'SecurityIncident'": "NO_SENTINEL",
+            "The 'SecurityIncident' table is not available": "NO_ACCESS",
+        }
+
+    def get_all_workspace_ids(self):
+        """Retrieve all accessible workspace IDs."""
+        workspaces = self.log_analytics_client.workspaces.list()
+        return [ws.customer_id for ws in workspaces]
+
+    def build_batch_queries(self, workspace_ids, query, timespan=None):
+        """Build a list of batch queries for each workspace."""
+        return [
+            LogsBatchQuery(workspace_id=workspace_id, query=query, timespan=timespan)
+            for workspace_id in workspace_ids
+        ]
+
+    def process_batch_response(self, workspace_ids, response):
+        """Process the response from a batch query."""
+        results = {}
+        for workspace_id, result in zip(workspace_ids, response):
+            if result.status == "Success":
+                if result.tables and result.tables[0].rows:
+                    results[workspace_id] = result.tables
+                else:
+                    results[workspace_id] = "NO_DATA"
+            else:
+                error_message = getattr(result, "message", "Unknown error")
+                error_type = next(
+                    (
+                        code
+                        for pattern, code in self.known_errors.items()
+                        if pattern in error_message
+                    ),
+                    "UNKNOWN_ERROR",
+                )
+                results[workspace_id] = error_type
+                log_level = logging.DEBUG if error_type == "NO_SENTINEL" else logging.WARNING
+                logging.log(log_level, f"Workspace {workspace_id}: {error_message}")
+        return results
+
+    def query_all_workspaces(self, query, timespan=None):
+        """Run a query across all accessible workspaces."""
+        workspace_ids = self.get_all_workspace_ids()
+
+        if not workspace_ids:
+            logging.error("No workspaces found!")
+            return {}
+
+        batch_queries = self.build_batch_queries(workspace_ids, query, timespan)
+        response = self.logs_query_client.query_batch(batch_queries)
+        return self.process_batch_response(workspace_ids, response)
 
     def list_lighthouse_sentinel_workspaces(self):
         """List all Sentinel workspaces accessible via Azure Lighthouse."""
@@ -151,16 +209,6 @@ class SentinelAPI:
                         pass
 
         return sentinel_workspaces
-
-    def get_incidents(self):
-        """Retrieve incidents from Microsoft Sentinel."""
-        incidents = self.client.incidents.list(
-            resource_group_name=self.resource_group_name,
-            workspace_name=self.workspace_name,
-        )
-        return list(incidents)
-
-    # Additional methods can be added here to interact with other Sentinel resources.
 
 
 class SentinelCheck(PluginClassBase):
@@ -252,49 +300,88 @@ class SentinelCheck(PluginClassBase):
                 check.exit_unknown(exc.message)
         check.final()
 
-    def check_open_incidents(self):
-        """Check the number of open (new + active) incidents in Sentinel."""
-        incidents = self.call_api(self._api.get_incidents)
-        active_incidents = len([i for i in incidents if i.properties.status.lower() == "active"])
-        new_incidents = len([i for i in incidents if i.properties.status.lower() == "new"])
-        open_incidents = active_incidents + new_incidents
-        label = "Open Incidents"
+    def check_incidents(self, filter, label, timespan=None):
+        """Check the number of incidents across all accessible Sentinel workspaces."""
+        if not filter.strip():
+            raise ValueError("Filter parameter cannot be empty")
+
+        query = f"SecurityIncident | where {filter} | summarize TotalCount=count()"
+        response = self._api.query_all_workspaces(query, timespan)
+
+        metrics = {"total_incidents": 0, "query_failures": 0, "no_sentinel": 0, "no_access": 0}
+
+        for _, value in response.items():
+            if isinstance(value, str):
+                if value == "NO_SENTINEL":
+                    metrics["no_sentinel"] += 1
+                elif value == "NO_ACCESS":
+                    metrics["no_access"] += 1
+                else:
+                    metrics["query_failures"] += 1
+            else:
+                for table in value:
+                    if table.name == "PrimaryResult" and table.rows:
+                        metrics["total_incidents"] += int(table.rows[0][0])
+
         metric_name = self.convert_label_name(label)
         warning, critical = self._get_thresholds(0, metric_name)
-        metrics = [
+        return [
             Metric(
                 metric_name,
-                open_incidents,
+                metrics["total_incidents"],
                 self._unit,
                 warning,
                 critical,
                 display_name=label,
-                summary_precision=0,
                 perf_data_precision=0,
-            )
+                summary_precision=0,
+            ),
+            Metric(
+                "query_failures",
+                metrics["query_failures"],
+                "",
+                "",
+                "",
+                display_name="Query Failures",
+                perf_data_precision=0,
+                summary_precision=0,
+            ),
+            Metric(
+                "workspaces_without_sentinel",
+                metrics["no_sentinel"],
+                "",
+                "",
+                "",
+                display_name="Workspaces Without Sentinel",
+                perf_data_precision=0,
+                summary_precision=0,
+            ),
         ]
-        return metrics
+
+    def check_active_incidents(self):
+        """Check the number of active incidents across all accessible Sentinel workspaces."""
+        query = "Status == 'Active'"
+        return self.check_incidents(query, "Active Incidents")
 
     def check_new_incidents(self):
-        """Check the number of new incidents in Sentinel."""
-        incidents = self.call_api(self._api.get_incidents)
-        new_incidents = len([i for i in incidents if i.properties.status.lower() == "new"])
-        label = "New Incidents"
-        metric_name = self.convert_label_name(label)
-        warning, critical = self._get_thresholds(0, metric_name)
-        metrics = [
-            Metric(
-                metric_name,
-                new_incidents,
-                self._unit,
-                warning,
-                critical,
-                display_name=label,
-                summary_precision=0,
-                perf_data_precision=0,
-            )
-        ]
-        return metrics
+        """Check the number of new incidents across all accessible Sentinel workspaces."""
+        query = "Status == 'New'"
+        return self.check_incidents(query, "New Incidents")
+
+    def check_open_incidents(self):
+        """Check the number of open (new + active) incidents across all accessible Sentinel workspaces."""
+        query = "Status in ('New', 'Active')"
+        return self.check_incidents(query, "Open Incidents")
+
+    def check_resolved_incidents(self):
+        """Check the number of resolved incidents across all accessible Sentinel workspaces."""
+        query = "Status == 'Resolved'"
+        return self.check_incidents(query, "Resolved Incidents")
+
+    def check_closed_incidents(self):
+        """Check the number of closed incidents across all accessible Sentinel workspaces."""
+        query = "Status == 'Closed'"
+        return self.check_incidents(query, "Closed Incidents")
 
     def check_lighthouse_sentinels(self):
         """Check that Sentinel workspaces are accessible via Azure Lighthouse."""
@@ -353,25 +440,7 @@ class SentinelCheck(PluginClassBase):
 # Define how each mode works, pointing to the correct Objects.
 # Names need to be in the format "Group.Mode".
 MODE_MAPPING = {
-    "Sentinel.Incidents": ModeUsage(
-        "Custom",
-        "check_open_incidents; 1",
-        [],  # No optional arguments
-        [
-            "AZURE_CLIENT_ID",
-            "AZURE_CLIENT_SECRET",
-            "AZURE_TENANT_ID",
-            "AZURE_SUBSCRIPTION_ID",
-            "AZURE_RESOURCE_GROUP",
-            "AZURE_WORKSPACE_NAME",
-        ],  # Required arguments
-        "",
-        300,
-        SentinelCheck,
-        {},
-        {},
-    ),
-    "Sentinel.Incidents": ModeUsage(
+    "Sentinel.NewIncidents": ModeUsage(
         "Custom",
         "check_new_incidents; 1",
         [],  # No optional arguments
@@ -381,7 +450,74 @@ MODE_MAPPING = {
             "AZURE_TENANT_ID",
             "AZURE_SUBSCRIPTION_ID",
             "AZURE_RESOURCE_GROUP",
-            "AZURE_WORKSPACE_NAME",
+        ],  # Required arguments
+        "",
+        300,
+        SentinelCheck,
+        {},
+        {},
+    ),
+    "Sentinel.ActiveIncidents": ModeUsage(
+        "Custom",
+        "check_active_incidents; 1",
+        [],  # No optional arguments
+        [
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_RESOURCE_GROUP",
+        ],  # Required arguments
+        "",
+        300,
+        SentinelCheck,
+        {},
+        {},
+    ),
+    "Sentinel.ResolvedIncidents": ModeUsage(
+        "Custom",
+        "check_resolved_incidents; 1",
+        [],  # No optional arguments
+        [
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_RESOURCE_GROUP",
+        ],  # Required arguments
+        "",
+        300,
+        SentinelCheck,
+        {},
+        {},
+    ),
+    "Sentinel.ClosedIncidents": ModeUsage(
+        "Custom",
+        "check_closed_incidents; 1",
+        [],  # No optional arguments
+        [
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_RESOURCE_GROUP",
+        ],  # Required arguments
+        "",
+        300,
+        SentinelCheck,
+        {},
+        {},
+    ),
+    "Sentinel.OpenIncidents": ModeUsage(
+        "Custom",
+        "check_open_incidents; 1",
+        [],  # No optional arguments
+        [
+            "AZURE_CLIENT_ID",
+            "AZURE_CLIENT_SECRET",
+            "AZURE_TENANT_ID",
+            "AZURE_SUBSCRIPTION_ID",
+            "AZURE_RESOURCE_GROUP",
         ],  # Required arguments
         "",
         300,

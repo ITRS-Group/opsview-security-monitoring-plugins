@@ -3,3 +3,4 @@ azure-identity
 azure-mgmt-securityinsight
 azure-mgmt-resource
 azure-mgmt-loganalytics
+azure-monitor-query
